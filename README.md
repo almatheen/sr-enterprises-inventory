@@ -1,80 +1,131 @@
 # SR Enterprises Inventory Management System
 
-Inventory, point-of-sale billing, GST invoicing and sales analytics for a retail business.
-A fresh installation starts **completely empty** – no products, clients, invoices or analytics are ever pre-loaded.
+Inventory management, point-of-sale billing, GST invoicing, and sales analytics for SR Enterprises.
 
 ## Features
-Dashboard · Inventory (CRUD, filters, stock adjustments, CSV export) · POS billing (cart, discount, GST, CGST/SGST/IGST, round-off) ·
-Invoices (A4 + thermal, print, PDF) · Reports (today / week / month / year / custom, charts, CSV) · Clients (purchase history, outstanding) ·
-Settings (business profile, logo, invoice prefix, low-stock threshold) · Global search (Ctrl+K) · Low-stock alerts · Dark mode · Responsive mobile layout.
 
-## Technology stack
-Next.js 14 (App Router) · React 18 · TypeScript · PostgreSQL · Prisma · Zod validation · JWT sessions (`jose`) with bcrypt password hashing · Chart.js · html2canvas + jsPDF.
+- Dashboard and sales analytics
+- Inventory CRUD, search, filters, stock adjustments, and CSV export
+- POS billing with discounts, GST, CGST/SGST/IGST, and round-off
+- Invoice generation, A4 and thermal printing, and PDF export
+- Reports for today, week, month, year, and custom date ranges
+- Client management, purchase history, and outstanding balances
+- Business settings and invoice configuration
+- Global search, low-stock alerts, dark mode, and responsive layout
 
-## Architecture
-| Layer | Location |
-|---|---|
-| UI components | `components/` |
-| Pages (thin wrappers) | `app/(app)/*` |
-| API routes (auth + validation + error mapping) | `app/api/*`, `lib/auth/guard.ts` |
-| Business logic | `lib/inventory`, `lib/invoices`, `lib/clients`, `lib/reports`, `lib/dashboard`, `lib/search` |
-| Bill maths (shared by browser preview **and** server) | `lib/billing/calc.ts` |
-| Validation schemas | `lib/validation/schemas.ts` |
-| Database | `prisma/schema.prisma`, `lib/db/prisma.ts` |
+## Technology Stack
 
-Styling: the approved design's CSS is kept **verbatim** in `app/globals.css` (same class names, tokens, breakpoints, animations) rather than being re-expressed in another system, so the rendered result is identical. Production-only additions (empty states, pager, login) are appended at the end of that file.
+- Next.js 14 App Router
+- React 18 and TypeScript
+- MySQL with Prisma ORM
+- Zod validation
+- JWT sessions using `jose`
+- bcrypt password hashing
+- Chart.js
+- html2canvas and jsPDF
 
-## Environment variables
-Copy `.env.example` to `.env`.
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `AUTH_SECRET` | Secret signing login sessions (≥16 chars). `openssl rand -base64 32` |
-| `NEXT_PUBLIC_APP_URL` | Public URL of the app |
+## Project Structure
 
-## Setup
+| Location                    | Purpose                         |
+| --------------------------- | ------------------------------- |
+| `app/`                      | Pages and API routes            |
+| `components/`               | UI components                   |
+| `lib/`                      | Business logic and services     |
+| `lib/billing/calc.ts`       | Shared billing calculations     |
+| `lib/validation/schemas.ts` | Validation schemas              |
+| `prisma/schema.prisma`      | Database schema                 |
+| `scripts/`                  | Admin and user creation scripts |
+
+## Environment Setup
+
+1. Install Node.js and MySQL.
+2. Create a MySQL database named `sr_enterprises`.
+3. Copy `.env.example` to `.env`.
+4. Configure the environment variables locally.
+
+Required variables:
+
+| Variable              | Purpose                            |
+| --------------------- | ---------------------------------- |
+| `DATABASE_URL`        | MySQL connection string            |
+| `AUTH_SECRET`         | Secret used to sign login sessions |
+| `NEXT_PUBLIC_APP_URL` | Application URL                    |
+
+Never commit `.env` or database backups to GitHub.
+
+## Installation
+
 ```bash
 npm install
-cp .env.example .env            # then edit values
-npx prisma migrate dev --name init   # creates tables (use `npm run db:deploy` in production)
-ADMIN_NAME="Owner" ADMIN_EMAIL="owner@yourshop.com" ADMIN_PASSWORD="a-long-password" npm run create-admin
-npm run dev                     # http://localhost:3000
+npx prisma generate
 ```
-Production: `npm run build && npm start`.
 
-### First admin / extra users
-`npm run create-admin` creates the first administrator (min. 10-character password). Additional users: `USER_EMAIL=… USER_PASSWORD=… USER_ROLE=STAFF npm run create-user`.
-Staff can bill, add/edit products and adjust stock; only admins can delete products and change settings.
+Configure your local `.env` file before running database commands.
 
-### Business information
-Sign in → **Settings**. Name, address, phone, email, GSTIN, state, pincode, logo, invoice prefix, receipt tagline and low-stock threshold are stored in the database and used on invoices.
+For a new development database, use Prisma migrations as configured for this project. For an existing database, verify the schema and back up the data before applying any changes.
 
-## Using the system
-- **Add products** – Inventory → *+ Add Product*. Unique IDs (`SR-MC-00001`, `SR-CH-00001` …) are generated on the server from a transactional counter. SKU and barcode must be unique. GST must be 0/5/12/18/28.
-- **Stock** – *Adjust*: Add, Remove, Damage, Return, Correction (set stock to). Every change writes a `StockMovement`; stock can never go negative. Low stock = `stock <= minimumStock`; out of stock = `0`.
-- **Billing** – search → click to add → set quantity → discount (% or ₹) → GST (Item GST, or step through slabs) → CGST+SGST or IGST → customer → payment → *Generate Invoice*. The server **recomputes every figure from database prices**, checks stock atomically, reduces inventory, saves the invoice and assigns the number `PREFIX-YYYY-00001` from a transactional counter (no gaps on failure, no duplicates).
-- **Customers** – with *Save customer* ticked a 10-digit mobile is required; clients are de-duplicated on mobile number.
-- **Credit sales** – Payment *Credit* needs the customer's mobile; the amount is added to the client's *Outstanding* until the invoice is marked paid.
+Start the development server:
 
-### Printing & PDF
-Open an invoice → choose **A4** or **Thermal** → **Print Invoice**. Print CSS hides everything except the invoice; A4 uses `@page A4`, thermal uses an 80 mm roll (`@page 80mm auto`, 280 px receipt). **Download PDF** renders the same on-screen invoice, so PDF and print match.
-For thermal printers choose the 80 mm paper size and disable headers/footers in the browser print dialog.
+```bash
+npm run dev
+```
 
-### Reports
-Computed from real invoices (IST day boundaries): total sales, orders, average order, tax, discount, gross profit (sales − discount − purchase cost), daily/monthly sales, category split, top products. With no data, charts show an empty state.
+Open `http://localhost:3000`.
+
+## Admin and Users
+
+Create the initial administrator using the project's configured script:
+
+```bash
+npm run create-admin
+```
+
+Additional users can be created using the project's user creation script. Follow the environment variables and role requirements defined by the scripts.
+
+## Inventory and Billing
+
+- Add and manage products using their unique identifiers.
+- Record stock additions, removals, damage, returns, and corrections.
+- Generate invoices using database-backed product prices and stock.
+- Apply discounts and GST according to the configured billing rules.
+- Manage clients and credit sales.
+
+## Reports
+
+Reports use invoice data to calculate sales, order counts, average order value, tax, discounts, gross profit, category performance, and top-selling products.
 
 ## Security
-bcrypt password hashes · signed httpOnly session cookie · all `/api` and app routes protected by middleware + per-route checks · server-side Zod validation · same-origin check on state-changing requests · login throttling · CSV formula-injection guard · no stack traces sent to the browser.
+
+- Password hashing
+- Signed HTTP-only session cookies
+- Server-side validation
+- Protected application and API routes
+- Login throttling
+- CSV formula-injection protection
 
 ## Deployment
-Any Node 18+ host with PostgreSQL. Set the three env vars, run `npm run db:deploy`, `npm run build`, `npm start`, then create the admin. Serve over HTTPS (cookies are `secure` in production). The login throttle is in-memory; use a shared store if you run several instances.
 
-## Development
-`npm run typecheck` · `npm test` (billing maths) · `npm run db:reset` wipes **all** data (development only).
+Production deployment requires a supported Node.js host, a production MySQL database, and correctly configured environment variables.
 
-## Troubleshooting
-- *AUTH_SECRET is missing* – set it in `.env`.
-- *Database unavailable* – check `DATABASE_URL` and that PostgreSQL is running.
-- *Cannot log in* – create the admin with `npm run create-admin`.
-- *Duplicate SKU/barcode* – these must be unique across products.
-- *Logo too large* – max about 250 KB.
+Before deploying:
+
+1. Provision a separate production database.
+2. Configure `DATABASE_URL`, `AUTH_SECRET`, and `NEXT_PUBLIC_APP_URL` in the hosting platform.
+3. Apply the project's reviewed Prisma migrations.
+4. Build and test the application.
+5. Create the production administrator securely.
+6. Verify login, inventory, billing, invoices, and reports.
+
+Do not use the local development database as the production database.
+
+## Development Checks
+
+```bash
+npm run typecheck
+npm test
+npx prisma validate
+```
+
+Run only the scripts that exist in `package.json`.
+
+**Important:** Database reset scripts can delete data. Back up the database before running any reset or destructive migration command.

@@ -13,9 +13,9 @@ export const GET = api(async ({ req }) => {
     where: q
       ? {
           OR: [
-            { invoiceNumber: { contains: q } },
-            { customerName: { contains: q } },
-            { customerPhone: { contains: q } },
+            { invoiceNumber: { contains: q, mode: 'insensitive' } },
+            { customerName: { contains: q, mode: 'insensitive' } },
+            { customerPhone: { contains: q, mode: 'insensitive' } },
           ],
         }
       : {},

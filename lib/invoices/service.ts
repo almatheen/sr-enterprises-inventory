@@ -391,17 +391,17 @@ export async function listInvoices(
     where.OR = [
       {
         invoiceNumber: {
-          contains: q,
+          contains: q, mode: 'insensitive',
         },
       },
       {
         customerName: {
-          contains: q,
+          contains: q, mode: 'insensitive',
         },
       },
       {
         customerPhone: {
-          contains: q,
+          contains: q, mode: 'insensitive',
         },
       },
     ];

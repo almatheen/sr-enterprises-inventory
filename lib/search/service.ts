@@ -16,17 +16,17 @@ export async function globalSearch(q: string) {
         OR: [
           {
             invoiceNumber: {
-              contains: qq
+              contains: qq, mode: 'insensitive'
             }
           },
           {
             customerName: {
-              contains: qq
+              contains: qq, mode: 'insensitive'
             }
           },
           {
             customerPhone: {
-              contains: qq
+              contains: qq, mode: 'insensitive'
             }
           }
         ]
@@ -48,12 +48,12 @@ export async function globalSearch(q: string) {
         OR: [
           {
             name: {
-              contains: qq
+              contains: qq, mode: 'insensitive'
             }
           },
           {
             phone: {
-              contains: qq
+              contains: qq, mode: 'insensitive'
             }
           }
         ]
@@ -74,17 +74,17 @@ export async function globalSearch(q: string) {
       OR: [
         {
           invoiceNumber: {
-            contains: qq
+            contains: qq, mode: 'insensitive'
           }
         },
         {
           customerName: {
-            contains: qq
+            contains: qq, mode: 'insensitive'
           }
         },
         {
           customerPhone: {
-            contains: qq
+            contains: qq, mode: 'insensitive'
           }
         }
       ]
@@ -96,12 +96,12 @@ export async function globalSearch(q: string) {
       OR: [
         {
           name: {
-            contains: qq
+            contains: qq, mode: 'insensitive'
           }
         },
         {
           phone: {
-            contains: qq
+            contains: qq, mode: 'insensitive'
           }
         }
       ]

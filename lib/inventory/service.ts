@@ -329,31 +329,31 @@ export async function listProducts(
     // the MySQL database/table collation.
     w.push(
       Prisma.sql`(
-        \`name\` LIKE ${like}
-        OR \`sku\` LIKE ${like}
-        OR \`uniqueId\` LIKE ${like}
-        OR COALESCE(\`barcode\`, '') LIKE ${like}
+        "name" ILIKE ${like}
+        OR "sku" ILIKE ${like}
+        OR "uniqueId" ILIKE ${like}
+        OR COALESCE("barcode", '') ILIKE ${like}
       )`
     );
   }
 
   if (qy.category) {
     w.push(
-      Prisma.sql`\`category\` = ${qy.category}`
+      Prisma.sql`"category" = ${qy.category}`
     );
   }
 
   if (qy.status === 'out') {
     w.push(
-      Prisma.sql`\`stock\` <= 0`
+      Prisma.sql`"stock" <= 0`
     );
   } else if (qy.status === 'lo') {
     w.push(
-      Prisma.sql`\`stock\` > 0 AND \`stock\` <= \`minimumStock\``
+      Prisma.sql`"stock" > 0 AND "stock" <= "minimumStock"`
     );
   } else if (qy.status === 'ok') {
     w.push(
-      Prisma.sql`\`stock\` > \`minimumStock\``
+      Prisma.sql`"stock" > "minimumStock"`
     );
   }
 
@@ -364,16 +364,16 @@ export async function listProducts(
   const [rows, cnt] = await Promise.all([
     prisma.$queryRaw<Row[]>`
       SELECT *
-      FROM \`Product\`
+      FROM "Product"
       ${where}
-      ORDER BY \`createdAt\` DESC, \`uniqueId\` DESC
+      ORDER BY "createdAt" DESC, "uniqueId" DESC
       LIMIT ${pageSize}
       OFFSET ${(page - 1) * pageSize}
     `,
 
     prisma.$queryRaw<{ c: number }[]>`
       SELECT COUNT(*) AS c
-      FROM \`Product\`
+      FROM "Product"
       ${where}
     `
   ]);
@@ -405,16 +405,16 @@ export async function lowStock(
   const rows = limit
     ? await prisma.$queryRaw<Row[]>`
         SELECT *
-        FROM \`Product\`
-        WHERE \`stock\` <= \`minimumStock\`
-        ORDER BY \`stock\` ASC, \`name\` ASC
+        FROM "Product"
+        WHERE "stock" <= "minimumStock"
+        ORDER BY "stock" ASC, "name" ASC
         LIMIT ${limit}
       `
     : await prisma.$queryRaw<Row[]>`
         SELECT *
-        FROM \`Product\`
-        WHERE \`stock\` <= \`minimumStock\`
-        ORDER BY \`stock\` ASC, \`name\` ASC
+        FROM "Product"
+        WHERE "stock" <= "minimumStock"
+        ORDER BY "stock" ASC, "name" ASC
       `;
 
   return rows.map(toProductDTO);
@@ -423,8 +423,8 @@ export async function lowStock(
 export async function lowStockCount() {
   const r = await prisma.$queryRaw<{ c: number }[]>`
     SELECT COUNT(*) AS c
-    FROM \`Product\`
-    WHERE \`stock\` <= \`minimumStock\`
+    FROM "Product"
+    WHERE "stock" <= "minimumStock"
   `;
 
   return Number(r[0]?.c ?? 0);

@@ -90,42 +90,40 @@ export async function salesSeries(
     }[]
   >`
     SELECT
-      DATE(
-        CONVERT_TZ(
-          createdAt,
-          '+00:00',
-          '+05:30'
-        )
+      TO_CHAR(
+        "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata',
+        'YYYY-MM-DD'
       ) AS d,
 
       CAST(
-        SUM(grandTotal) AS DOUBLE
+        SUM("grandTotal") AS DOUBLE PRECISION
       ) AS sales,
 
       CAST(
-        SUM(costTotal) AS DOUBLE
+        SUM("costTotal") AS DOUBLE PRECISION
       ) AS cost,
 
       CAST(
-        SUM(tax) AS DOUBLE
+        SUM("tax") AS DOUBLE PRECISION
       ) AS tax,
 
       CAST(
-        SUM(discount) AS DOUBLE
+        SUM("discount") AS DOUBLE PRECISION
       ) AS disc,
 
-      COUNT(*) AS orders
+      CAST(COUNT(*) AS INTEGER) AS orders
 
-    FROM Invoice
+    FROM "Invoice"
 
-    WHERE createdAt >= ${from}
-      AND createdAt < ${to}
+    WHERE "createdAt" >= ${from}
+      AND "createdAt" < ${to}
 
     GROUP BY d
 
     ORDER BY d
-  `;  
-    const map = new Map(
+  `;
+
+  const map = new Map(
     rows.map((r) => [
       istDate(new Date(r.d)),
       r
@@ -290,21 +288,21 @@ export async function reportSummary(
       }[]
     >`
       SELECT
-        ii.category,
+        ii."category",
 
         CAST(
-          SUM(ii.amount) AS DOUBLE
+          SUM(ii."amount") AS DOUBLE PRECISION
         ) AS amount
 
-      FROM InvoiceItem ii
+      FROM "InvoiceItem" ii
 
-      JOIN Invoice i
-        ON i.id = ii.invoiceId
+      JOIN "Invoice" i
+        ON i."id" = ii."invoiceId"
 
-      WHERE i.createdAt >= ${from}
-        AND i.createdAt < ${to}
+      WHERE i."createdAt" >= ${from}
+        AND i."createdAt" < ${to}
 
-      GROUP BY ii.category
+      GROUP BY ii."category"
 
       ORDER BY amount DESC
     `,
@@ -318,32 +316,32 @@ export async function reportSummary(
       }[]
     >`
       SELECT
-        ii.name,
+        ii."name",
 
         CAST(
-          SUM(ii.quantity) AS UNSIGNED
+          SUM(ii."quantity") AS INTEGER
         ) AS units,
 
         CAST(
-          SUM(ii.amount) AS DOUBLE
+          SUM(ii."amount") AS DOUBLE PRECISION
         ) AS revenue,
 
         CAST(
           SUM(
-            ii.amount -
-            ii.cost * ii.quantity
-          ) AS DOUBLE
+            ii."amount" -
+            ii."cost" * ii."quantity"
+          ) AS DOUBLE PRECISION
         ) AS profit
 
-      FROM InvoiceItem ii
+      FROM "InvoiceItem" ii
 
-      JOIN Invoice i
-        ON i.id = ii.invoiceId
+      JOIN "Invoice" i
+        ON i."id" = ii."invoiceId"
 
-      WHERE i.createdAt >= ${from}
-        AND i.createdAt < ${to}
+      WHERE i."createdAt" >= ${from}
+        AND i."createdAt" < ${to}
 
-      GROUP BY ii.name
+      GROUP BY ii."name"
 
       ORDER BY units DESC
 

@@ -51,7 +51,7 @@ export async function createSalesReturn(
         // Serialize return creation for this invoice.
         await tx.$queryRaw<Array<{ id: string }>>`
           SELECT id
-          FROM Invoice
+          FROM "Invoice"
           WHERE id = ${initialInvoice.id}
           FOR UPDATE
         `;
@@ -281,7 +281,7 @@ export async function approveSalesReturn(
       // Serialize concurrent approval attempts.
       await tx.$queryRaw<Array<{ id: string }>>`
         SELECT id
-        FROM SalesReturn
+        FROM "SalesReturn"
         WHERE id = ${returnId}
         FOR UPDATE
       `;

@@ -12,10 +12,10 @@ export const GET = api(async ({ req }) => {
   const products = await prisma.product.findMany({
     where: {
       OR: [
-        { name: { contains: q } },
-        { sku: { contains: q } },
-        { uniqueId: { contains: q } },
-        { barcode: { contains: q } },
+        { name: { contains: q, mode: 'insensitive' } },
+        { sku: { contains: q, mode: 'insensitive' } },
+        { uniqueId: { contains: q, mode: 'insensitive' } },
+        { barcode: { contains: q, mode: 'insensitive' } },
       ],
     },
     select: {

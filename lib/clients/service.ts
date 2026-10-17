@@ -118,17 +118,17 @@ export async function listClients(
         OR: [
           {
             name: {
-              contains: q.trim()
+              contains: q.trim(), mode: 'insensitive'
             }
           },
           {
             phone: {
-              contains: q.trim()
+              contains: q.trim(), mode: 'insensitive'
             }
           },
           {
             email: {
-              contains: q.trim()
+              contains: q.trim(), mode: 'insensitive'
             }
           }
         ]

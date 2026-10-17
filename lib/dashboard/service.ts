@@ -106,22 +106,14 @@ export async function dashboardData(days: number) {
       }[]
     >`
       SELECT
-        CAST(
-          DAYOFWEEK(
-            CONVERT_TZ(
-              createdAt,
-              '+00:00',
-              '+05:30'
-            )
-          ) - 1 AS UNSIGNED
-        ) AS dow,
-        CAST(SUM(grandTotal) AS DOUBLE) AS s
-      FROM Invoice
-      WHERE createdAt >= ${monthStart}
-        AND createdAt < ${tomorrow}
-      GROUP BY dow
-      ORDER BY s DESC
-      LIMIT 1
+  CAST(EXTRACT(DOW FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')) AS INTEGER) AS dow,
+  CAST(SUM("grandTotal") AS DOUBLE PRECISION) AS s
+FROM "Invoice"
+WHERE "createdAt" >= ${monthStart}
+  AND "createdAt" < ${tomorrow}
+GROUP BY dow
+ORDER BY s DESC
+LIMIT 1
     `
   ]);
 

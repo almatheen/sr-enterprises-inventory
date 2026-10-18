@@ -64,6 +64,7 @@ export async function createInvoice(
   userId: string
 ) {
   const phone = input.customer.phone.trim();
+  const isCredit = input.paymentMethod === 'Credit';
 
   if (phone && !/^\d{10}$/.test(phone)) {
     throw new AppError(
@@ -85,7 +86,7 @@ export async function createInvoice(
     );
   }
 
-  if (input.paymentMethod === 'Credit' && !phone) {
+  if (isCredit && !phone) {
     throw new AppError(
       400,
       "Credit sales need the customer's 10-digit mobile number.",
@@ -109,11 +110,16 @@ export async function createInvoice(
   return prisma.$transaction(
     async (tx) => {
       // The billing UI submits ProductDTO.id, which maps to p.id.
+      // Ordered by id so every transaction locks rows in the same order
+      // (prevents deadlocks between concurrent sales).
       const products = await tx.product.findMany({
         where: {
           id: {
             in: [...want.keys()],
           },
+        },
+        orderBy: {
+          id: 'asc',
         },
       });
 
@@ -143,6 +149,9 @@ export async function createInvoice(
       );
 
       // Deduct stock atomically, checking availability per product.
+      // newStock holds the true post-decrement stock for each product.
+      const newStock = new Map<string, number>();
+
       for (const p of products) {
         const qty = want.get(p.id)!;
 
@@ -167,9 +176,22 @@ export async function createInvoice(
             'INSUFFICIENT_STOCK'
           );
         }
+
+        // Row is locked by our update, so this read is the real post-decrement value.
+        const fresh = await tx.product.findUniqueOrThrow({
+          where: {
+            id: p.id,
+          },
+          select: {
+            stock: true,
+          },
+        });
+
+        newStock.set(p.id, fresh.stock);
       }
 
       // Find or create the customer when appropriate.
+      // Credit sales always create the client so the debt is tracked.
       let customerId: string | null = null;
       let name = input.customer.name.trim();
 
@@ -183,7 +205,7 @@ export async function createInvoice(
         if (existing) {
           customerId = existing.id;
           name = name || existing.name;
-        } else if (input.saveCustomer) {
+        } else if (input.saveCustomer || isCredit) {
           const customer = await tx.client.create({
             data: {
               name: name || 'Customer',
@@ -199,7 +221,6 @@ export async function createInvoice(
         }
       }
 
-      const isCredit = input.paymentMethod === 'Credit';
       const paid = isCredit ? 0 : calc.gt;
       const balance = round2(calc.gt - paid);
 
@@ -290,7 +311,7 @@ export async function createInvoice(
         },
       });
 
-      // Record stock movements.
+      // Record stock movements using the true post-decrement balance.
       for (const p of products) {
         const qty = want.get(p.id)!;
 
@@ -299,7 +320,7 @@ export async function createInvoice(
             productId: p.id,
             type: 'SALE',
             quantity: -qty,
-            balance: p.stock - qty,
+            balance: newStock.get(p.id)!,
             reason: `Invoice ${invoiceNumber}`,
             userId,
           },
@@ -327,7 +348,7 @@ export async function createInvoice(
       const lowStock = products
         .filter(
           (p) =>
-            p.stock - want.get(p.id)! <= p.minimumStock
+            newStock.get(p.id)! <= p.minimumStock
         )
         .map((p) => p.name);
 
@@ -338,6 +359,7 @@ export async function createInvoice(
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      maxWait: 10000,
       timeout: 15000,
     }
   );
@@ -448,53 +470,72 @@ export async function listInvoices(
 
 /**
  * Settles a credit invoice in full.
+ * The status update is the guard, so two simultaneous
+ * "mark paid" requests can't both reduce the client's outstanding.
  */
 export async function markPaid(number: string) {
-  return prisma.$transaction(async (tx) => {
-    const invoice = await tx.invoice.findUnique({
-      where: {
-        invoiceNumber: number,
-      },
-    });
-
-    if (!invoice) {
-      throw new AppError(
-        404,
-        'Invoice not found.',
-        'NOT_FOUND'
-      );
-    }
-
-    if (invoice.status === 'Paid') {
-      throw new AppError(
-        409,
-        'Invoice is already paid.',
-        'ALREADY_PAID'
-      );
-    }
-
-    await tx.invoice.update({
-      where: {
-        id: invoice.id,
-      },
-      data: {
-        status: 'Paid',
-        amountPaid: invoice.grandTotal,
-        balance: 0,
-      },
-    });
-
-    if (invoice.customerId) {
-      await tx.client.update({
+  return prisma.$transaction(
+    async (tx) => {
+      const invoice = await tx.invoice.findUnique({
         where: {
-          id: invoice.customerId,
-        },
-        data: {
-          outstanding: {
-            decrement: invoice.balance,
-          },
+          invoiceNumber: number,
         },
       });
+
+      if (!invoice) {
+        throw new AppError(
+          404,
+          'Invoice not found.',
+          'NOT_FOUND'
+        );
+      }
+
+      if (invoice.status === 'Paid') {
+        throw new AppError(
+          409,
+          'Invoice is already paid.',
+          'ALREADY_PAID'
+        );
+      }
+
+      const res = await tx.invoice.updateMany({
+        where: {
+          id: invoice.id,
+          status: {
+            not: 'Paid',
+          },
+        },
+        data: {
+          status: 'Paid',
+          amountPaid: invoice.grandTotal,
+          balance: 0,
+        },
+      });
+
+      if (res.count !== 1) {
+        throw new AppError(
+          409,
+          'Invoice is already paid.',
+          'ALREADY_PAID'
+        );
+      }
+
+      if (invoice.customerId) {
+        await tx.client.update({
+          where: {
+            id: invoice.customerId,
+          },
+          data: {
+            outstanding: {
+              decrement: invoice.balance,
+            },
+          },
+        });
+      }
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
     }
-  });
+  );
 }

@@ -6,7 +6,7 @@ import { lowStock, lowStockCount } from '../inventory/service';
 
 import { listInvoices } from '../invoices/service';
 
-import { salesSeries } from '../reports/service';
+import { refundTotals, salesSeries } from '../reports/service';
 
 export async function dashboardData(days: number) {
   const todayStart = startOfIstDay(new Date());
@@ -16,47 +16,38 @@ export async function dashboardData(days: number) {
   const yesterday = addDays(todayStart, -1);
 
   // Month start in IST
-  const ist = new Date(
-    Date.now() + 330 * 60000
-  );
+  const ist = new Date(Date.now() + 330 * 60000);
 
   const monthStart = new Date(
-    Date.UTC(
-      ist.getUTCFullYear(),
-      ist.getUTCMonth(),
-      1
-    ) -
+    Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), 1) -
       330 * 60000
   );
 
   const prevMonthStart = new Date(
-    Date.UTC(
-      ist.getUTCFullYear(),
-      ist.getUTCMonth() - 1,
-      1
-    ) -
+    Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth() - 1, 1) -
       330 * 60000
   );
 
-  const sum = async (
-    gte: Date,
-    lt: Date
-  ) =>
-    num(
-      (
-        await prisma.invoice.aggregate({
-          where: {
-            createdAt: {
-              gte,
-              lt
-            }
-          },
-          _sum: {
-            grandTotal: true
+  // Sales in [gte, lt): invoice totals minus refunds approved in the same window.
+  const sum = async (gte: Date, lt: Date) => {
+    const [invoices, refunds] = await Promise.all([
+      prisma.invoice.aggregate({
+        where: {
+          createdAt: {
+            gte,
+            lt
           }
-        })
-      )._sum.grandTotal
-    );
+        },
+        _sum: {
+          grandTotal: true
+        }
+      }),
+
+      refundTotals(gte, lt)
+    ]);
+
+    return num(invoices._sum.grandTotal) - refunds.refund;
+  };
 
   const [
     today,
@@ -94,10 +85,7 @@ export async function dashboardData(days: number) {
       limit: 6
     }),
 
-    salesSeries(
-      addDays(tomorrow, -days),
-      tomorrow
-    ),
+    salesSeries(addDays(tomorrow, -days), tomorrow),
 
     prisma.$queryRaw<
       {
@@ -106,39 +94,28 @@ export async function dashboardData(days: number) {
       }[]
     >`
       SELECT
-  CAST(EXTRACT(DOW FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')) AS INTEGER) AS dow,
-  CAST(SUM("grandTotal") AS DOUBLE PRECISION) AS s
-FROM "Invoice"
-WHERE "createdAt" >= ${monthStart}
-  AND "createdAt" < ${tomorrow}
-GROUP BY dow
-ORDER BY s DESC
-LIMIT 1
+        CAST(EXTRACT(DOW FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')) AS INTEGER) AS dow,
+        CAST(SUM("grandTotal") AS DOUBLE PRECISION) AS s
+      FROM "Invoice"
+      WHERE "createdAt" >= ${monthStart}
+        AND "createdAt" < ${tomorrow}
+      GROUP BY dow
+      ORDER BY s DESC
+      LIMIT 1
     `
   ]);
 
-  const pct = (
-    a: number,
-    b: number
-  ) =>
-    b > 0
-      ? round2(((a - b) / b) * 100)
-      : null;
+  const pct = (a: number, b: number) =>
+    b > 0 ? round2(((a - b) / b) * 100) : null;
 
   return {
     today: round2(today),
 
-    todayChange: pct(
-      today,
-      yest
-    ),
+    todayChange: pct(today, yest),
 
     month: round2(month),
 
-    monthChange: pct(
-      month,
-      prevMonth
-    ),
+    monthChange: pct(month, prevMonth),
 
     orders,
 

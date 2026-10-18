@@ -221,6 +221,11 @@ enum ReturnStatus {
   CANCELLED
 }
 
+enum ReturnResolution {
+  REFUND
+  EXCHANGE
+}
+
 model SalesReturn {
   id           String  @id @default(cuid())
   returnNumber String  @unique
@@ -233,6 +238,8 @@ model SalesReturn {
   status       ReturnStatus      @default(RECORDED)
 
   processedById String?
+  /// Set when an admin approves the return. Refunds are reported on this date.
+  approvedAt    DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -240,6 +247,7 @@ model SalesReturn {
 
   @@index([invoiceId])
   @@index([createdAt])
+  @@index([approvedAt])
   @@index([status])
 }
 
@@ -260,6 +268,16 @@ model SalesReturnItem {
   condition   ReturnedProductCondition
   restocked   Boolean                  @default(false)
   notes       String                   @default("")
+
+  resolution           ReturnResolution @default(REFUND)
+  /// GST-inclusive money refunded for this line (set at approval).
+  refundAmount         Decimal          @default(0) @db.Decimal(14, 2)
+  /// GST portion contained in refundAmount.
+  refundTax            Decimal          @default(0) @db.Decimal(14, 2)
+  /// Net cost credited back to profit (restocked cost minus replacement cost).
+  costReversed         Decimal          @default(0) @db.Decimal(14, 2)
+  replacementProductId String?
+  replacementQuantity  Int              @default(0)
 
   @@index([returnId])
   @@index([invoiceItemId])

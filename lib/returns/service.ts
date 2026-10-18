@@ -1,14 +1,14 @@
-
 import {
   Prisma,
   ReturnedProductCondition,
+  ReturnResolution,
   SalesReturnReason,
   ReturnStatus,
 } from '@prisma/client';
 
-import { prisma, nextSequence } from '../db/prisma';
+import { prisma, nextSequence, num } from '../db/prisma';
 import { AppError } from '../errors';
-import { istYear } from '../format';
+import { istYear, round2 } from '../format';
 import type { SalesReturnInput } from '../validation/schemas';
 
 const RETURN_PREFIX = 'SR-RET';
@@ -16,6 +16,20 @@ const RETURN_PREFIX = 'SR-RET';
 type InvoiceWithItems = Prisma.InvoiceGetPayload<{
   include: { items: true };
 }>;
+
+type Money = Prisma.Decimal | number;
+
+/** Converts the money fields of a return item to plain numbers for the API. */
+function toMoneyItem<
+  T extends { refundAmount: Money; refundTax: Money; costReversed: Money },
+>(item: T) {
+  return {
+    ...item,
+    refundAmount: num(item.refundAmount),
+    refundTax: num(item.refundTax),
+    costReversed: num(item.costReversed),
+  };
+}
 
 export async function createSalesReturn(
   input: SalesReturnInput,
@@ -40,7 +54,7 @@ export async function createSalesReturn(
 
       if (isInvoiceReturn) {
         const initialInvoice = await tx.invoice.findUnique({
-          where: { invoiceNumber: invoiceNumber! },
+          where: { invoiceNumber },
           select: { id: true },
         });
 
@@ -80,6 +94,15 @@ export async function createSalesReturn(
 
           return item.invoiceItemId;
         });
+
+        // Total quantity requested per invoice item in this request.
+        const requested = new Map<string, number>();
+
+        for (const item of input.items) {
+          const id = item.invoiceItemId!;
+
+          requested.set(id, (requested.get(id) ?? 0) + item.quantity);
+        }
 
         const previousReturns = await tx.salesReturnItem.findMany({
           where: {
@@ -124,7 +147,7 @@ export async function createSalesReturn(
             soldItem.quantity -
             (previouslyReturned.get(invoiceItemId) ?? 0);
 
-          if (item.quantity > remaining) {
+          if (requested.get(invoiceItemId)! > remaining) {
             throw new AppError(
               409,
               `Only ${remaining} unit(s) remain eligible for return for ${soldItem.name}.`,
@@ -198,14 +221,38 @@ export async function createSalesReturn(
         }
       }
 
+      // Every replacement product for an exchange must exist.
+      const replacementIds = [
+        ...new Set(
+          input.items
+            .filter((item) => item.resolution === 'EXCHANGE')
+            .map((item) => item.replacementProductId!),
+        ),
+      ];
+
+      if (replacementIds.length > 0) {
+        const found = await tx.product.findMany({
+          where: { id: { in: replacementIds } },
+          select: { id: true },
+        });
+
+        if (found.length !== replacementIds.length) {
+          throw new AppError(
+            404,
+            'A replacement product was not found.',
+            'PRODUCT_NOT_FOUND',
+          );
+        }
+      }
+
       const year = istYear();
       const sequence = await nextSequence(tx, `sales-return:${year}`);
 
       const returnNumber =
         `${RETURN_PREFIX}-${year}-${String(sequence).padStart(5, '0')}`;
 
-      // Recording a return never changes stock.
-      return tx.salesReturn.create({
+      // Recording a return never changes stock or money.
+      const created = await tx.salesReturn.create({
         data: {
           returnNumber,
           invoiceId: invoice?.id ?? null,
@@ -216,52 +263,69 @@ export async function createSalesReturn(
           processedById: userId,
           items: {
             create: input.items.map((item) => {
+              const isExchange = item.resolution === 'EXCHANGE';
+
+              const common = {
+                quantity: item.quantity,
+                condition: item.condition as ReturnedProductCondition,
+                restocked: false,
+                notes: item.notes,
+                resolution: item.resolution as ReturnResolution,
+                replacementProductId: isExchange
+                  ? item.replacementProductId!
+                  : null,
+                replacementQuantity: isExchange
+                  ? (item.replacementQuantity ?? item.quantity)
+                  : 0,
+              };
+
               if (isInvoiceReturn) {
                 const soldItem = invoiceItems.get(item.invoiceItemId!)!;
 
                 return {
+                  ...common,
                   invoiceItemId: soldItem.id,
                   productId: soldItem.productId,
                   productName: soldItem.name,
                   sku: soldItem.sku,
-                  quantity: item.quantity,
-                  condition:
-                    item.condition as ReturnedProductCondition,
-                  restocked: false,
-                  notes: item.notes,
                 };
               }
 
               const product = directProducts.get(item.productId!)!;
 
               return {
+                ...common,
                 invoiceItemId: null,
                 productId: product.id,
                 productName: product.name,
                 sku: product.sku,
-                quantity: item.quantity,
-                condition:
-                  item.condition as ReturnedProductCondition,
-                restocked: false,
-                notes: item.notes,
               };
             }),
           },
         },
         include: { items: true },
       });
+
+      return { ...created, items: created.items.map(toMoneyItem) };
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      maxWait: 10000,
       timeout: 15000,
     },
   );
 }
 
 /**
- * Approve a recorded return.
- * Resalable items are added to sellable stock exactly once.
- * Damaged and inspection-pending items are not restocked.
+ * Approve a recorded return (admin only).
+ *
+ * - RESALABLE items go back to sellable stock exactly once.
+ * - DAMAGED / NEEDS_INSPECTION items never enter sellable stock.
+ * - REFUND items: the server works out the GST-inclusive refund from the
+ *   invoice (after the invoice discount share). Unpaid credit invoices have
+ *   their balance and the client's outstanding reduced first.
+ * - EXCHANGE items: no money moves; the replacement product leaves stock.
+ * - Direct (no invoice) returns never affect money or profit, only stock.
  */
 export async function approveSalesReturn(
   returnId: string,
@@ -271,7 +335,7 @@ export async function approveSalesReturn(
     async (tx) => {
       const existing = await tx.salesReturn.findUnique({
         where: { id: returnId },
-        select: { id: true },
+        select: { id: true, invoiceId: true },
       });
 
       if (!existing) {
@@ -286,9 +350,22 @@ export async function approveSalesReturn(
         FOR UPDATE
       `;
 
+      // Serialize refunds against the same invoice.
+      if (existing.invoiceId) {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+          FROM "Invoice"
+          WHERE id = ${existing.invoiceId}
+          FOR UPDATE
+        `;
+      }
+
       const salesReturn = await tx.salesReturn.findUnique({
         where: { id: returnId },
-        include: { invoice: true, items: true },
+        include: {
+          invoice: true,
+          items: { include: { invoiceItem: true } },
+        },
       });
 
       if (!salesReturn) {
@@ -303,44 +380,201 @@ export async function approveSalesReturn(
         );
       }
 
-      // Validate every resalable product before changing any stock.
-      for (const item of salesReturn.items) {
-        if (item.condition !== ReturnedProductCondition.RESALABLE) {
-          continue;
-        }
+      const orderedItems = [...salesReturn.items].sort((a, b) =>
+        (a.productId ?? '').localeCompare(b.productId ?? ''),
+      );
 
-        if (!item.productId) {
+      // Lock every product this return touches, in one fixed order,
+      // so concurrent approvals can't deadlock.
+      const productIds = [
+        ...new Set(
+          orderedItems
+            .flatMap((item) => [item.productId, item.replacementProductId])
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ].sort();
+
+      if (productIds.length > 0) {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+          FROM "Product"
+          WHERE id IN (${Prisma.join(productIds)})
+          ORDER BY id
+          FOR UPDATE
+        `;
+      }
+
+      // Validate everything before changing any stock.
+      for (const item of orderedItems) {
+        if (item.condition === ReturnedProductCondition.RESALABLE) {
+          if (!item.productId) {
+            throw new AppError(
+              409,
+              `${item.productName} is not linked to an inventory product.`,
+              'PRODUCT_NOT_LINKED',
+            );
+          }
+
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+            select: { id: true },
+          });
+
+          if (!product) {
+            throw new AppError(
+              409,
+              `Inventory product not found for ${item.productName}.`,
+              'PRODUCT_NOT_FOUND',
+            );
+          }
+        }
+      }
+
+      const replacementIds = [
+        ...new Set(
+          orderedItems
+            .filter(
+              (item) =>
+                item.resolution === ReturnResolution.EXCHANGE &&
+                item.replacementProductId,
+            )
+            .map((item) => item.replacementProductId!),
+        ),
+      ];
+
+      const replacementProducts = new Map(
+        (
+          await tx.product.findMany({
+            where: { id: { in: replacementIds } },
+            select: { id: true, purchasePrice: true },
+          })
+        ).map((p) => [p.id, p]),
+      );
+
+      for (const item of orderedItems) {
+        if (
+          item.resolution === ReturnResolution.EXCHANGE &&
+          (!item.replacementProductId ||
+            !replacementProducts.has(item.replacementProductId))
+        ) {
           throw new AppError(
             409,
-            `${item.productName} is not linked to an inventory product.`,
-            'PRODUCT_NOT_LINKED',
-          );
-        }
-
-        const product = await tx.product.findUnique({
-          where: { id: item.productId },
-          select: { id: true },
-        });
-
-        if (!product) {
-          throw new AppError(
-            409,
-            `Inventory product not found for ${item.productName}.`,
+            `Replacement product not found for ${item.productName}.`,
             'PRODUCT_NOT_FOUND',
           );
         }
       }
 
-      for (const item of salesReturn.items) {
-        // Damaged and inspection-pending products stay out of sellable stock.
-        if (item.condition !== ReturnedProductCondition.RESALABLE) {
-          continue;
+      const invoice = salesReturn.invoice;
+
+      const discountRatio =
+        invoice && num(invoice.subtotal) > 0
+          ? num(invoice.discount) / num(invoice.subtotal)
+          : 0;
+
+      // Work out money and cost effects per item.
+      const results = new Map<
+        string,
+        {
+          restock: boolean;
+          refund: number;
+          tax: number;
+          costReversed: number;
+        }
+      >();
+
+      let totalRefund = 0;
+
+      for (const item of orderedItems) {
+        const restock =
+          item.condition === ReturnedProductCondition.RESALABLE &&
+          !item.restocked;
+
+        let refund = 0;
+        let tax = 0;
+        let costReversed = 0;
+
+        const sold = item.invoiceItem;
+
+        // Only invoice-based returns have a verified price and cost.
+        if (invoice && sold) {
+          if (item.resolution === ReturnResolution.REFUND) {
+            // GST-inclusive line value after this invoice's discount share.
+            const lineNet = num(sold.amount) * (1 - discountRatio);
+
+            const earlier = await tx.salesReturnItem.findMany({
+              where: {
+                invoiceItemId: sold.id,
+                id: { not: item.id },
+                salesReturn: { status: ReturnStatus.COMPLETED },
+              },
+              select: { refundAmount: true },
+            });
+
+            const alreadyRefunded = earlier.reduce(
+              (total, row) => total + num(row.refundAmount),
+              0,
+            );
+
+            const perShare = round2(
+              (lineNet * item.quantity) / sold.quantity,
+            );
+
+            // Never refund more than the line was worth.
+            refund = Math.max(
+              0,
+              Math.min(perShare, round2(lineNet - alreadyRefunded)),
+            );
+
+            const rate = Math.max(0, sold.gst);
+
+            tax =
+              rate > 0 ? round2((refund * rate) / (100 + rate)) : 0;
+          }
+
+          if (restock) {
+            costReversed += round2(num(sold.cost) * item.quantity);
+          }
+
+          if (
+            item.resolution === ReturnResolution.EXCHANGE &&
+            item.replacementProductId
+          ) {
+            const replacement = replacementProducts.get(
+              item.replacementProductId,
+            )!;
+
+            const replacementQty =
+              item.replacementQuantity > 0
+                ? item.replacementQuantity
+                : item.quantity;
+
+            costReversed -= round2(
+              num(replacement.purchasePrice) * replacementQty,
+            );
+          }
         }
 
-        // Defensive protection against duplicate restocking.
-        if (item.restocked) {
-          continue;
-        }
+        totalRefund += refund;
+
+        results.set(item.id, {
+          restock,
+          refund,
+          tax,
+          costReversed: round2(costReversed),
+        });
+      }
+
+      const reason = (suffix: string) =>
+        `Approved sales return ${salesReturn.returnNumber} - ${suffix}`;
+
+      const sourceDescription = invoice
+        ? `Invoice ${invoice.invoiceNumber}`
+        : 'Direct product return (invoice unverified)';
+
+      // Pass 1: put resalable items back into stock.
+      for (const item of orderedItems) {
+        if (!results.get(item.id)!.restock) continue;
 
         const productId = item.productId!;
 
@@ -357,45 +591,122 @@ export async function approveSalesReturn(
           );
         }
 
-        const product = await tx.product.findUnique({
+        // Row is locked, so this is the true post-restock stock.
+        const fresh = await tx.product.findUniqueOrThrow({
           where: { id: productId },
           select: { stock: true },
         });
-
-        if (!product) {
-          throw new AppError(
-            404,
-            'Inventory product not found.',
-            'PRODUCT_NOT_FOUND',
-          );
-        }
-
-        const sourceDescription = salesReturn.invoice
-          ? `Invoice ${salesReturn.invoice.invoiceNumber}`
-          : 'Direct product return (invoice unverified)';
 
         await tx.stockMovement.create({
           data: {
             productId,
             type: 'RETURN',
             quantity: item.quantity,
-            balance: product.stock,
-            reason:
-              `Approved sales return ${salesReturn.returnNumber} - ` +
-              sourceDescription,
+            balance: fresh.stock,
+            reason: reason(sourceDescription),
             userId,
           },
         });
+      }
 
-        await tx.salesReturnItem.update({
-          where: { id: item.id },
-          data: { restocked: true },
+      // Pass 2: take exchange replacements out of stock.
+      for (const item of orderedItems) {
+        if (
+          item.resolution !== ReturnResolution.EXCHANGE ||
+          !item.replacementProductId
+        ) {
+          continue;
+        }
+
+        const replacementQty =
+          item.replacementQuantity > 0
+            ? item.replacementQuantity
+            : item.quantity;
+
+        const taken = await tx.product.updateMany({
+          where: {
+            id: item.replacementProductId,
+            stock: { gte: replacementQty },
+          },
+          data: { stock: { decrement: replacementQty } },
+        });
+
+        if (taken.count !== 1) {
+          throw new AppError(
+            409,
+            `Not enough stock for the replacement of ${item.productName}.`,
+            'INSUFFICIENT_STOCK',
+          );
+        }
+
+        const fresh = await tx.product.findUniqueOrThrow({
+          where: { id: item.replacementProductId },
+          select: { stock: true },
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            productId: item.replacementProductId,
+            type: 'REMOVE',
+            quantity: -replacementQty,
+            balance: fresh.stock,
+            reason: reason(`exchange replacement for ${item.productName}`),
+            userId,
+          },
         });
       }
 
-      return tx.salesReturn.update({
+      // Save per-item results.
+      for (const item of orderedItems) {
+        const r = results.get(item.id)!;
+
+        await tx.salesReturnItem.update({
+          where: { id: item.id },
+          data: {
+            restocked: item.restocked || r.restock,
+            refundAmount: r.refund,
+            refundTax: r.tax,
+            costReversed: r.costReversed,
+          },
+        });
+      }
+
+      // Refund effect on the invoice and the client.
+      totalRefund = round2(totalRefund);
+      let creditAdjusted = 0;
+
+      if (invoice && totalRefund > 0) {
+        const balance = num(invoice.balance);
+
+        // An unpaid credit invoice owes less instead of paying cash out.
+        creditAdjusted = round2(
+          Math.min(totalRefund, Math.max(0, balance)),
+        );
+
+        if (creditAdjusted > 0) {
+          await tx.invoice.update({
+            where: { id: invoice.id },
+            data: { balance: round2(balance - creditAdjusted) },
+          });
+        }
+
+        if (invoice.customerId) {
+          await tx.client.update({
+            where: { id: invoice.customerId },
+            data: {
+              totalPurchases: { decrement: totalRefund },
+              outstanding: { decrement: creditAdjusted },
+            },
+          });
+        }
+      }
+
+      const updated = await tx.salesReturn.update({
         where: { id: returnId },
-        data: { status: ReturnStatus.COMPLETED },
+        data: {
+          status: ReturnStatus.COMPLETED,
+          approvedAt: new Date(),
+        },
         include: {
           invoice: {
             select: {
@@ -406,9 +717,20 @@ export async function approveSalesReturn(
           items: true,
         },
       });
+
+      return {
+        ...updated,
+        items: updated.items.map(toMoneyItem),
+        refund: {
+          total: totalRefund,
+          creditAdjusted,
+          cashRefund: round2(totalRefund - creditAdjusted),
+        },
+      };
     },
     {
       isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      maxWait: 10000,
       timeout: 15000,
     },
   );
@@ -417,7 +739,7 @@ export async function approveSalesReturn(
 export async function listSalesReturns(limit = 10) {
   const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
 
-  return prisma.salesReturn.findMany({
+  const rows = await prisma.salesReturn.findMany({
     take: safeLimit,
     orderBy: { createdAt: 'desc' },
     include: {
@@ -430,4 +752,65 @@ export async function listSalesReturns(limit = 10) {
       items: true,
     },
   });
+
+  return rows.map((row) => ({
+    ...row,
+    items: row.items.map(toMoneyItem),
+  }));
+}
+
+/**
+ * Items from approved returns that were NOT put back into sellable stock
+ * (damaged or waiting for inspection). Feeds the replace/claim screen.
+ */
+export async function listDamagedItems(limit = 50) {
+  const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
+
+  const rows = await prisma.salesReturnItem.findMany({
+    where: {
+      condition: {
+        in: [
+          ReturnedProductCondition.DAMAGED,
+          ReturnedProductCondition.NEEDS_INSPECTION,
+        ],
+      },
+      salesReturn: { status: ReturnStatus.COMPLETED },
+    },
+    orderBy: { salesReturn: { createdAt: 'desc' } },
+    take: safeLimit,
+    include: {
+      salesReturn: {
+        select: {
+          returnNumber: true,
+          reason: true,
+          approvedAt: true,
+          invoice: {
+            select: {
+              invoiceNumber: true,
+              customerName: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    returnNumber: row.salesReturn.returnNumber,
+    invoiceNumber: row.salesReturn.invoice?.invoiceNumber ?? null,
+    customerName: row.salesReturn.invoice?.customerName ?? '',
+    productId: row.productId,
+    productName: row.productName,
+    sku: row.sku,
+    quantity: row.quantity,
+    condition: row.condition,
+    resolution: row.resolution,
+    reason: row.salesReturn.reason,
+    notes: row.notes,
+    replacementProductId: row.replacementProductId,
+    replacementQuantity: row.replacementQuantity,
+    refundAmount: num(row.refundAmount),
+    approvedAt: row.salesReturn.approvedAt?.toISOString() ?? null,
+  }));
 }

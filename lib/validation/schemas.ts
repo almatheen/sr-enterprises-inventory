@@ -253,6 +253,18 @@ export const salesReturnSchema = z
 
           addBackToInventory: z.boolean().default(false),
 
+          // REFUND = money back (calculated by the server).
+          // EXCHANGE = swap for another product, no money moves.
+          resolution: z.enum(['REFUND', 'EXCHANGE']).default('REFUND'),
+
+          replacementProductId: z.string().trim().min(1).optional(),
+
+          replacementQuantity: z.coerce
+            .number()
+            .int('Quantity must be a whole number')
+            .min(1, 'Quantity must be at least 1')
+            .optional(),
+
           notes: z
             .string()
             .trim()
@@ -297,6 +309,22 @@ export const salesReturnSchema = z
           code: z.ZodIssueCode.custom,
           path: ['items', index, 'invoiceItemId'],
           message: 'Direct returns cannot use invoice items.',
+        });
+      }
+
+      if (item.resolution === 'EXCHANGE' && !item.replacementProductId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, 'replacementProductId'],
+          message: 'Select the replacement product.',
+        });
+      }
+
+      if (item.resolution === 'REFUND' && item.replacementProductId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, 'replacementProductId'],
+          message: 'A replacement product only applies to exchanges.',
         });
       }
 

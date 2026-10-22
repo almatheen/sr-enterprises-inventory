@@ -22,8 +22,9 @@ yarn-debug.log*
 pnpm-debug.log*
 *.log
 
-# Local database backups and dumps
+# Local database backups and dumps (migrations are allowed)
 *.sql
+!prisma/migrations/**/*.sql
 *.sql.gz
 *.dump
 *.bak

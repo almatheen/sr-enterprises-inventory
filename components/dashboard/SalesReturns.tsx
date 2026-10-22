@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { notifyStockChanged } from '@/lib/client/events';
+import { useShell } from '@/components/layout/AppShell';
 
 type Condition = 'RESALABLE' | 'NEEDS_INSPECTION' | 'DAMAGED';
 type ReturnSource = 'INVOICE' | 'DIRECT';
@@ -50,6 +52,21 @@ interface ReturnActivity {
     condition: string;
     restocked: boolean;
   }[];
+}
+
+interface DamagedItem {
+  id: string;
+  returnNumber: string;
+  invoiceNumber: string | null;
+  customerName: string;
+  productName: string;
+  sku: string;
+  quantity: number;
+  condition: string;
+  resolution: string;
+  reason: string;
+  refundAmount: number;
+  approvedAt: string | null;
 }
 
 interface SelectedReturnItem {
@@ -121,6 +138,8 @@ function getProductRows(payload: unknown): ProductSearchResult[] {
 }
 
 export function SalesReturns() {
+  const { user } = useShell();
+  const isAdmin = user.role === 'ADMIN';
   const [activities, setActivities] = useState<ReturnActivity[]>([]);
   const [invoices, setInvoices] = useState<EligibleInvoice[]>([]);
   const [invoiceNumber, setInvoiceNumber] = useState('');
@@ -142,13 +161,16 @@ export function SalesReturns() {
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [filter, setFilter] = useState<'ALL' | 'PENDING'>('ALL');
+  const [damaged, setDamaged] = useState<DamagedItem[]>([]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [returnsResponse, invoicesResponse] = await Promise.all([
-        fetch('/api/returns?limit=10'),
+      const [returnsResponse, invoicesResponse, damagedResponse] = await Promise.all([
+        fetch('/api/returns?limit=50'),
         fetch('/api/returns/eligible'),
+        fetch('/api/returns/damaged?limit=100').catch(() => null),
       ]);
       const returnsJson = await returnsResponse.json();
       const invoicesJson = await invoicesResponse.json();
@@ -162,6 +184,11 @@ export function SalesReturns() {
 
       setActivities(returnsJson.data ?? []);
       setInvoices(invoicesJson.data ?? []);
+
+      if (damagedResponse && damagedResponse.ok) {
+        const damagedJson = await damagedResponse.json();
+        setDamaged(damagedJson.data ?? []);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load sales returns.');
     } finally {
@@ -289,7 +316,7 @@ export function SalesReturns() {
     });
   }
 
-  async function submitReturn() {
+  async function submitReturn(thenApprove = false) {
     const selectedItems =
       source === 'INVOICE'
         ? Object.entries(selectedInvoiceItems).map(([id, item]) => ({
@@ -342,6 +369,15 @@ export function SalesReturns() {
       }
     }
 
+    if (
+      thenApprove &&
+      !window.confirm(
+        'Save and approve this return now? Stock and the refund amount update immediately.',
+      )
+    ) {
+      return;
+    }
+
     setSaving(true);
     setError('');
     setSuccess('');
@@ -366,13 +402,24 @@ export function SalesReturns() {
         throw new Error(result.error?.message || 'Could not record the return.');
       }
 
-      setSuccess(
-        source === 'DIRECT'
-          ? 'Direct return recorded as invoice-unverified. Inventory will update only after approval.'
-          : 'Return recorded. Inventory will update after approval.',
-      );
+      const newId =
+        result?.data?.id ?? result?.data?.return?.id ?? result?.data?.returnId;
+      const wasDirect = source === 'DIRECT';
       resetSelection();
-      await loadData();
+
+      if (thenApprove && newId) {
+        await runApprove(String(newId));
+        await loadData();
+      } else {
+        setSuccess(
+          thenApprove
+            ? 'Return recorded, but its id could not be read. Approve it from the list below.'
+            : wasDirect
+              ? 'Direct return recorded as invoice-unverified. Inventory will update only after approval.'
+              : 'Return recorded. Inventory will update after approval.',
+        );
+        await loadData();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not record the return.');
     } finally {
@@ -395,7 +442,10 @@ export function SalesReturns() {
       : 'Approve this return? No products will be added to sellable inventory.';
 
     if (!window.confirm(message)) return;
+    await runApprove(returnId);
+  }
 
+  async function runApprove(returnId: string) {
     setApprovingId(returnId);
     setError('');
     setSuccess('');
@@ -412,7 +462,20 @@ export function SalesReturns() {
         throw new Error(result.error?.message || 'Could not approve the return.');
       }
 
-      setSuccess('Return approved. Eligible inventory movements have been recorded.');
+      const refund = result?.data?.refund ?? result?.refund;
+      const money = (n: unknown) => `₹${Number(n ?? 0).toFixed(2)}`;
+      let msg = 'Return approved. No money refund for this return.';
+      if (refund && Number(refund.total) > 0) {
+        msg = `Return approved. Refund total ${money(refund.total)}.`;
+        if (Number(refund.creditAdjusted) > 0) {
+          msg += ` ${money(refund.creditAdjusted)} adjusted against the customer's credit balance.`;
+        }
+        if (Number(refund.cashRefund) > 0) {
+          msg += ` Give back ${money(refund.cashRefund)}.`;
+        }
+      }
+      setSuccess(msg);
+      notifyStockChanged();
       await loadData();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not approve the return.');
@@ -422,12 +485,19 @@ export function SalesReturns() {
   }
 
   const chosenDirectProducts = Object.values(selectedDirectItems);
+  const visible =
+    filter === 'PENDING'
+      ? activities.filter((a) => a.status === 'RECORDED')
+      : activities;
+  const formEmpty =
+    source === 'INVOICE' ? !selectedInvoice : chosenDirectProducts.length === 0;
+  const pendingCount = activities.filter((a) => a.status === 'RECORDED').length;
 
   return (
     <section
       className="card sales-returns"
       style={{
-        marginTop: 16,
+        marginTop: 0,
         minWidth: 0,
         width: '100%',
         maxWidth: '100%',
@@ -755,23 +825,41 @@ export function SalesReturns() {
             </div>
           </div>
 
+          {isAdmin && (
+            <button
+              type="button"
+              className="p save-return"
+              disabled={saving || approvingId !== null || formEmpty}
+              onClick={() => void submitReturn(true)}
+            >
+              {saving || approvingId !== null ? 'Working...' : 'Save & Approve Return'}
+            </button>
+          )}
           <button
             type="button"
-            className="p save-return"
-            disabled={saving || (source === 'INVOICE' ? !selectedInvoice : chosenDirectProducts.length === 0)}
-            onClick={() => void submitReturn()}
+            className={isAdmin ? 's save-return' : 'p save-return'}
+            disabled={saving || approvingId !== null || formEmpty}
+            onClick={() => void submitReturn(false)}
           >
-            {saving ? 'Saving return...' : 'Save Return — Pending Approval'}
+            {saving ? 'Saving return...' : isAdmin ? 'Save Only — Pending Approval' : 'Save Return — Pending Approval'}
           </button>
         </div>
       )}
 
       <div className="return-activity">
-        <b>Recent Return Activities</b>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <b style={{ flex: 1 }}>Return Activities</b>
+          <button type="button" className={filter === 'ALL' ? 'p' : 's'} onClick={() => setFilter('ALL')}>
+            All
+          </button>
+          <button type="button" className={filter === 'PENDING' ? 'p' : 's'} onClick={() => setFilter('PENDING')}>
+            Pending approval ({pendingCount})
+          </button>
+        </div>
         {loading ? (
           <p>Loading returns...</p>
-        ) : activities.length === 0 ? (
-          <p className="helper-text">No returns recorded yet. Recorded returns will appear here.</p>
+        ) : visible.length === 0 ? (
+          <p className="helper-text">{filter === 'PENDING' ? 'Nothing is waiting for approval.' : 'No returns recorded yet. Recorded returns will appear here.'}</p>
         ) : (
           <div className="activity-scroll">
             <table className="activity-table">
@@ -789,7 +877,7 @@ export function SalesReturns() {
                 </tr>
               </thead>
               <tbody>
-                {activities.map((activity) =>
+                {visible.map((activity) =>
                   activity.items.map((item) => (
                     <tr key={item.id}>
                       <td>{activity.returnNumber}</td>
@@ -831,6 +919,59 @@ export function SalesReturns() {
                     </tr>
                   )),
                 )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="return-activity">
+        <b>
+          Damaged &amp; Inspection Items ({damaged.reduce((n, d) => n + d.quantity, 0)} units)
+        </b>
+        <p className="helper-text">
+          Items from approved returns that were not put back into sellable stock. Use this list for supplier returns and inspection.
+        </p>
+        {damaged.length === 0 ? (
+          <p className="helper-text">No damaged or inspection items right now.</p>
+        ) : (
+          <div className="activity-scroll">
+            <table className="activity-table" style={{ minWidth: 820 }}>
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>SKU</th>
+                  <th>Qty</th>
+                  <th>Status</th>
+                  <th>Return</th>
+                  <th>Invoice / Customer</th>
+                  <th>Refund</th>
+                  <th>Approved</th>
+                </tr>
+              </thead>
+              <tbody>
+                {damaged.map((d) => (
+                  <tr key={d.id}>
+                    <td className="activity-product">{d.productName}</td>
+                    <td>{d.sku}</td>
+                    <td>{d.quantity}</td>
+                    <td>
+                      {d.condition === 'DAMAGED' ? 'Damaged — supplier return' : 'Needs inspection'}
+                    </td>
+                    <td>{d.returnNumber}</td>
+                    <td>
+                      {d.invoiceNumber ?? 'Direct / unverified'}
+                      <br />
+                      <small>{d.customerName || 'Walk-in customer'}</small>
+                    </td>
+                    <td>
+                      {d.resolution === 'EXCHANGE' ? 'Exchange' : `₹${Number(d.refundAmount).toFixed(2)}`}
+                    </td>
+                    <td>
+                      {d.approvedAt ? new Date(d.approvedAt).toLocaleDateString('en-IN') : '—'}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

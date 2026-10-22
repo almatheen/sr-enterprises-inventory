@@ -151,12 +151,13 @@ export default function BillingPage() {
       return toast('Cart is empty', true);
     }
 
-    if (bill.cp && !/^\d{10}$/.test(bill.cp)) {
-      return toast('Invalid mobile number', true);
+    // Customer name and mobile are required on every sale.
+    if (!bill.cn.trim()) {
+      return toast('Enter the customer name', true);
     }
 
-    if (bill.sv && (bill.cn || bill.cp) && !/^\d{10}$/.test(bill.cp)) {
-      return toast('Enter name and 10-digit mobile', true);
+    if (!/^\d{10}$/.test(bill.cp)) {
+      return toast('Enter a valid 10-digit mobile number', true);
     }
 
     setBusy(true);
@@ -168,10 +169,10 @@ export default function BillingPage() {
       }>('/api/invoices', {
         method: 'POST',
         body: {
-        items: cart.map((l) => ({
-          productId: l.p.id,
-          quantity: l.qty,
-        })),
+          items: cart.map((l) => ({
+            productId: l.p.id,
+            quantity: l.qty,
+          })),
           discountType: bill.dt,
           discountValue: +bill.dv || 0,
           gstOverride: bill.gst,
@@ -179,7 +180,7 @@ export default function BillingPage() {
           paymentMethod: bill.pay,
           saveCustomer: bill.sv,
           customer: {
-            name: bill.cn,
+            name: bill.cn.trim(),
             phone: bill.cp,
             email: bill.email,
             gstin: bill.gstin,
@@ -340,10 +341,10 @@ export default function BillingPage() {
           >
             <option value="item">Item GST</option>
             {GST_RATES.filter((rate) => rate <= 18).map((rate) => (
-            <option key={rate} value={rate}>
-              {rate}% GST
-            </option>
-          ))}
+              <option key={rate} value={rate}>
+                {rate}% GST
+              </option>
+            ))}
           </select>
 
           <select
@@ -398,19 +399,26 @@ export default function BillingPage() {
 
         <div className="f">
           <input
-            placeholder="Customer name"
+            placeholder="Customer name *"
             value={bill.cn}
             onChange={(e) => set('cn', e.target.value)}
-            aria-label="Customer name"
+            required
+            aria-required="true"
+            aria-label="Customer name (required)"
           />
 
           <input
-            placeholder="Mobile"
+            placeholder="Mobile (10 digits) *"
             value={bill.cp}
-            onChange={(e) => set('cp', e.target.value.trim())}
+            onChange={(e) =>
+              set('cp', e.target.value.replace(/\D/g, '').slice(0, 10))
+            }
             onBlur={lookup}
             inputMode="numeric"
-            aria-label="Customer mobile"
+            maxLength={10}
+            required
+            aria-required="true"
+            aria-label="Customer mobile (required)"
           />
         </div>
 

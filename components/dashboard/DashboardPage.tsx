@@ -14,7 +14,6 @@ import { InvoiceRows } from '@/components/invoices/InvoiceRows';
 import { ProductModal } from '@/components/modals/ProductModal';
 import { ClientModal } from '@/components/modals/ClientModal';
 import { AdjustModal } from '@/components/modals/AdjustModal';
-import { SalesReturns } from '@/components/dashboard/SalesReturns';
 
 interface D {
   today: number;
@@ -313,11 +312,6 @@ export default function DashboardPage() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      {/* Sales Returns — full-width dashboard section */}
-      <div style={{ marginTop: 20 }}>
-        <SalesReturns />
       </div>
     </>
   );

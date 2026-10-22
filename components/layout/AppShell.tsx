@@ -9,8 +9,8 @@ import { useModal } from '@/components/ui/Providers';
 import { StockAlerts } from '@/components/modals/StockAlerts';
 import { SearchResults } from '@/components/modals/SearchResults';
 
-export const I: Record<string, string> = { dashboard: '🏠', inventory: '📦', billing: '🧾', invoices: '📄', reports: '📊', clients: '👥', settings: '⚙️' };
-export const PAGES: Record<string, string> = { dashboard: 'Dashboard', inventory: 'Inventory', billing: 'Billing', invoices: 'Invoices', reports: 'Reports & Analytics', clients: 'Clients', settings: 'Settings' };
+export const I: Record<string, string> = { dashboard: '🏠', inventory: '📦', billing: '🧾', invoices: '📄', returns: '↩️', reports: '📊', clients: '👥', settings: '⚙️' };
+export const PAGES: Record<string, string> = { dashboard: 'Dashboard', inventory: 'Inventory', billing: 'Billing', invoices: 'Invoices', returns: 'Returns', reports: 'Reports & Analytics', clients: 'Clients', settings: 'Settings' };
 
 interface Shell { user: SessionUser; business: BusinessDTO; refreshBadge: () => void; toggleTheme: () => void; badgeVersion: number }
 const ShellCtx = createContext<Shell>(null as unknown as Shell);

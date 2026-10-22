@@ -64,33 +64,31 @@ export async function createInvoice(
   userId: string
 ) {
   const phone = input.customer.phone.trim();
+  const customerName = input.customer.name.trim();
   const isCredit = input.paymentMethod === 'Credit';
 
-  if (phone && !/^\d{10}$/.test(phone)) {
+  // Customer name and mobile are required on every sale.
+  if (!customerName) {
+    throw new AppError(
+      400,
+      'Enter the customer name.',
+      'CUSTOMER_NAME_REQUIRED'
+    );
+  }
+
+  if (!phone) {
+    throw new AppError(
+      400,
+      'Enter the 10-digit mobile number.',
+      'CUSTOMER_PHONE_REQUIRED'
+    );
+  }
+
+  if (!/^\d{10}$/.test(phone)) {
     throw new AppError(
       400,
       'Invalid mobile number',
       'INVALID_PHONE'
-    );
-  }
-
-  if (
-    input.saveCustomer &&
-    (input.customer.name || phone) &&
-    !phone
-  ) {
-    throw new AppError(
-      400,
-      'Enter name and 10-digit mobile',
-      'INVALID_CUSTOMER'
-    );
-  }
-
-  if (isCredit && !phone) {
-    throw new AppError(
-      400,
-      "Credit sales need the customer's 10-digit mobile number.",
-      'CREDIT_NEEDS_CUSTOMER'
     );
   }
 
@@ -193,32 +191,29 @@ export async function createInvoice(
       // Find or create the customer when appropriate.
       // Credit sales always create the client so the debt is tracked.
       let customerId: string | null = null;
-      let name = input.customer.name.trim();
+      let name = customerName;
 
-      if (phone) {
-        const existing = await tx.client.findUnique({
-          where: {
+      const existing = await tx.client.findUnique({
+        where: {
+          phone,
+        },
+      });
+
+      if (existing) {
+        customerId = existing.id;
+        name = name || existing.name;
+      } else if (input.saveCustomer || isCredit) {
+        const customer = await tx.client.create({
+          data: {
+            name,
             phone,
+            email: input.customer.email,
+            gstin: input.customer.gstin,
+            address: input.customer.address,
           },
         });
 
-        if (existing) {
-          customerId = existing.id;
-          name = name || existing.name;
-        } else if (input.saveCustomer || isCredit) {
-          const customer = await tx.client.create({
-            data: {
-              name: name || 'Customer',
-              phone,
-              email: input.customer.email,
-              gstin: input.customer.gstin,
-              address: input.customer.address,
-            },
-          });
-
-          customerId = customer.id;
-          name = name || customer.name;
-        }
+        customerId = customer.id;
       }
 
       const paid = isCredit ? 0 : calc.gt;
